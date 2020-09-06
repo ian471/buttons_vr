@@ -49,6 +49,17 @@ async function createScene () {
           }
         })
       }
+
+      // Handle B/Y button
+      for (const id of ['b-button', 'y-button']) {
+        const component = motionController.components[id]
+        if (!component) continue
+        component.onButtonStateChangedObservable.add(() => {
+          if (component.pressed) {
+            xr.exitXRAsync()
+          }
+        })
+      }
     })
   })
   onSqueezeStateChangedObservable.add(({ input, pressed }) => {
