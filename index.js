@@ -5,10 +5,21 @@ const canvas = document.getElementById('renderCanvas')
 
 let engine = null
 let scene = null
-const createDefaultEngine = function () { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true }) }
+function createDefaultEngine () {
+  return new BABYLON.Engine(canvas, true, {
+    preserveDrawingBuffer: true,
+    stencil: true
+  })
+}
 
 const collisionMeshes = {}
 const SCALE = 0.125
+
+const onSqueezeStateChangedObservable = new BABYLON.Observable()
+
+function getGameObjectFromMesh (mesh) {
+  return collisionMeshes[mesh.uniqueId]
+}
 
 async function createScene () {
   // Create the scene space
@@ -22,6 +33,35 @@ async function createScene () {
   const xr = defaultXr.baseExperience
   // console.log('Available features:', BABYLON.WebXRFeaturesManager.GetAvailableFeatures())
   // console.log('Enabled features:', xr.featuresManager.getEnabledFeatures())
+
+  // Set up controller bindings
+  defaultXr.input.onControllerAddedObservable.add(inputSource => {
+    inputSource.onMotionControllerInitObservable.add(motionController => {
+      // Handle squeeze action
+      const squeeze = motionController.getComponentOfType('squeeze')
+      if (squeeze) {
+        squeeze.onButtonStateChangedObservable.add(() => {
+          if (squeeze.changes.pressed) {
+            onSqueezeStateChangedObservable.notifyObservers({
+              input: inputSource,
+              pressed: squeeze.pressed
+            })
+          }
+        })
+      }
+    })
+  })
+  onSqueezeStateChangedObservable.add(({ input, pressed }) => {
+    if (pressed) {
+      const mesh = defaultXr.pointerSelection.getMeshUnderPointer(input.uniqueId)
+      if (mesh) {
+        const obj = getGameObjectFromMesh(mesh)
+        if (obj) {
+          obj._onGrab(input)
+        }
+      }
+    }
+  })
 
   const metal = new BABYLON.StandardMaterial('metal', scene)
   metal.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5)
@@ -61,7 +101,7 @@ async function createScene () {
 
   scene.onPointerDown = (event, { hit, pickedMesh }) => {
     if (hit) {
-      const obj = collisionMeshes[pickedMesh.uniqueId]
+      const obj = getGameObjectFromMesh(pickedMesh)
       if (obj && obj.onActivate) {
         obj.onActivate(pickedMesh)
       }
@@ -78,8 +118,6 @@ function playSound (name, position, scene) {
   }
   if (position) {
     sound.setPosition(position)
-  } else {
-    console.error('Could not set sound spatial position', position)
   }
   sound.play()
 }
@@ -89,6 +127,8 @@ class GameObject {
     this.scene = scene
     this.xformNode = new BABYLON.TransformNode()
     this.labelTexture = null
+    this.grabbed = false
+    this.grabbingInput = null
   }
 
   attachToPanel (panel, row, col) {
@@ -114,6 +154,32 @@ class GameObject {
 
   onActivate () {
     // Implement me
+  }
+
+  _onGrab (input) {
+    this.grabbed = true
+    this.grabbingInput = input
+    onSqueezeStateChangedObservable.add(({ input, pressed }) => {
+      if (input === this.grabbingInput && !pressed) {
+        this.onRelease(input)
+      }
+    })
+    this.onGrab(input)
+  }
+
+  onGrab (input) {
+    // Implement me
+    this.xformNode.setParent(input.grip)
+  }
+
+  _onRelease (input) {
+    this.grabbed = false
+    this.onRelease(input)
+  }
+
+  onRelease (input) {
+    // Implement me
+    this.xformNode.setParent(null)
   }
 }
 
@@ -142,6 +208,7 @@ class Switch extends GameObject {
     this.plate.material = scene.getMaterialByName('metal')
     this.toggle.material = scene.getMaterialByName('blackPlastic')
 
+    this.registerCollisionMesh(this.plate)
     this.registerCollisionMesh(this.toggle)
   }
 
@@ -173,6 +240,7 @@ class Button extends GameObject {
     this.plate.parent = this.xformNode
     this.toggle.parent = this.xformNode
     this.plate.material = scene.getMaterialByName('metal')
+    this.registerCollisionMesh(this.plate)
     this.registerCollisionMesh(this.toggle)
     this.activationTimeout = null
   }
@@ -217,6 +285,7 @@ class Panel extends GameObject {
     this.panel.material = this.scene.getMaterialByName('metal')
     this.panel.parent = this.xformNode
     this.panel.position.z = -0.2
+    this.registerCollisionMesh(this.panel)
   }
 
   positionFromIndex (row, column) {
